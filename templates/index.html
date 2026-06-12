@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resume Analyzer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <!-- ── Header ─────────────────────────────────────────── -->
+  <header>
+    <div class="header-inner">
+      <span class="logo-icon">📄</span>
+      <div>
+        <h1>Resume Analyzer</h1>
+        <p class="tagline">Upload your resume and discover your technical skills instantly</p>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main content ────────────────────────────────────── -->
+  <main>
+
+    <!-- Upload Card -->
+    <section class="card upload-card" id="uploadCard">
+      <h2>Upload Your Resume</h2>
+      <p class="subtitle">Supported formats: <strong>PDF</strong> and <strong>DOCX</strong></p>
+
+      <!-- Drag-and-drop zone -->
+      <div class="drop-zone" id="dropZone">
+        <div class="drop-icon">☁️</div>
+        <p class="drop-text">Drag &amp; drop your resume here</p>
+        <p class="drop-sub">or</p>
+
+        <!-- Hidden real file input; the styled button below triggers it -->
+        <input
+          type="file"
+          id="resumeInput"
+          accept=".pdf,.docx"
+          style="display:none"
+        />
+        <button class="btn btn-outline" type="button" onclick="document.getElementById('resumeInput').click()">
+          Browse File
+        </button>
+
+        <!-- Shows the selected filename once a file is picked -->
+        <p class="file-name" id="fileName">No file chosen</p>
+      </div>
+
+      <!-- Error message area (hidden by default) -->
+      <div class="alert alert-error" id="errorBox" style="display:none"></div>
+
+      <!-- Upload & Analyze button -->
+      <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeResume()" disabled>
+        Analyze Resume
+      </button>
+    </section>
+
+    <!-- Loading Spinner (hidden until a request is in flight) -->
+    <section class="card loading-card" id="loadingCard" style="display:none">
+      <div class="spinner"></div>
+      <p class="loading-text">Analyzing your resume…</p>
+      <p class="loading-sub">Extracting text and detecting skills</p>
+    </section>
+
+    <!-- Results Section (hidden until analysis completes) -->
+    <section class="card results-card" id="resultsCard" style="display:none">
+
+      <!-- Summary bar -->
+      <div class="results-header">
+        <div>
+          <h2>Analysis Results</h2>
+          <p class="results-filename" id="resultsFilename"></p>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="resetApp()">↩ Analyze Another</button>
+      </div>
+
+      <!-- Stat badges -->
+      <div class="stats-row" id="statsRow"></div>
+
+      <!-- No-skills message (shown if nothing found) -->
+      <div class="no-skills" id="noSkillsMsg" style="display:none">
+        <span class="no-skills-icon">🔍</span>
+        <p>No recognizable technical skills were found in this resume.</p>
+        <p class="no-skills-hint">
+          Make sure the resume contains plain text (not a scanned image) and lists
+          technologies, languages, or tools you have worked with.
+        </p>
+      </div>
+
+      <!-- Skill category cards — filled dynamically by JS -->
+      <div class="categories-grid" id="categoriesGrid"></div>
+
+    </section>
+
+  </main>
+
+  <!-- ── Footer ─────────────────────────────────────────── -->
+  <footer>
+    <p>Built with Flask &amp; Python · Beginner-friendly Resume Analyzer</p>
+  </footer>
+
+  <!-- ── JavaScript ──────────────────────────────────────── -->
+  <script>
+    // ── Category metadata: icon + CSS class ──────────────────
+    const CATEGORY_META = {
+      "Programming Languages": { icon: "💻", cls: "cat-lang"  },
+      "Web Frameworks":        { icon: "🌐", cls: "cat-web"   },
+      "Databases":             { icon: "🗄️",  cls: "cat-db"    },
+      "Cloud & DevOps":        { icon: "☁️",  cls: "cat-cloud" },
+      "Tools & Technologies":  { icon: "🛠️",  cls: "cat-tools" },
+    };
+
+    // ── Selected file reference ───────────────────────────────
+    let selectedFile = null;
+
+    // ── Wire up the file input ────────────────────────────────
+    document.getElementById('resumeInput').addEventListener('change', function () {
+      handleFileSelect(this.files[0]);
+    });
+
+    // ── Drag-and-drop handlers ────────────────────────────────
+    const dropZone = document.getElementById('dropZone');
+
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.classList.remove('drag-over');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) handleFileSelect(file);
+    });
+
+    /**
+     * Called whenever the user picks a file (via browse or drag-drop).
+     * Validates the extension, updates the UI, and enables the Analyze button.
+     */
+    function handleFileSelect(file) {
+      hideError();
+      const allowed = ['application/pdf',
+                        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+      const ext = file.name.split('.').pop().toLowerCase();
+
+      if (!['pdf', 'docx'].includes(ext)) {
+        showError('Invalid file type. Please upload a PDF or DOCX file.');
+        return;
+      }
+
+      selectedFile = file;
+      document.getElementById('fileName').textContent = `📎 ${file.name}`;
+      document.getElementById('analyzeBtn').disabled = false;
+      dropZone.classList.add('has-file');
+    }
+
+    /**
+     * Sends the selected file to /analyze via a multipart POST request,
+     * then renders the results returned by Flask.
+     */
+    async function analyzeResume() {
+      if (!selectedFile) return;
+
+      hideError();
+      showSection('loadingCard');
+      hideSection('uploadCard');
+      hideSection('resultsCard');
+
+      const formData = new FormData();
+      formData.append('resume', selectedFile);
+
+      try {
+        const response = await fetch('/analyze', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+          showSection('uploadCard');
+          hideSection('loadingCard');
+          showError(data.error || 'Something went wrong. Please try again.');
+          return;
+        }
+
+        renderResults(data);
+
+      } catch (err) {
+        showSection('uploadCard');
+        hideSection('loadingCard');
+        showError('Network error. Please check your connection and try again.');
+      }
+    }
+
+    /**
+     * Populates the results card with skills grouped by category.
+     * @param {Object} data  - Response JSON from /analyze
+     */
+    function renderResults(data) {
+      hideSection('loadingCard');
+      hideSection('uploadCard');
+
+      document.getElementById('resultsFilename').textContent = `📎 ${data.filename}`;
+
+      // Stat badges
+      const statsRow = document.getElementById('statsRow');
+      statsRow.innerHTML = `
+        <div class="stat-badge">
+          <span class="stat-num">${data.summary.total_skills}</span>
+          <span class="stat-label">Skills Found</span>
+        </div>
+        <div class="stat-badge">
+          <span class="stat-num">${data.summary.categories_found}</span>
+          <span class="stat-label">Categories</span>
+        </div>
+      `;
+
+      const grid = document.getElementById('categoriesGrid');
+      grid.innerHTML = '';
+
+      const noMsg = document.getElementById('noSkillsMsg');
+
+      if (data.summary.total_skills === 0) {
+        noMsg.style.display = 'block';
+      } else {
+        noMsg.style.display = 'none';
+
+        // Build one card per category
+        for (const [category, skills] of Object.entries(data.skills)) {
+          const meta = CATEGORY_META[category] || { icon: '📌', cls: 'cat-default' };
+
+          // Build skill tags HTML
+          const tagsHtml = skills
+            .map(s => `<span class="skill-tag ${meta.cls}">${s}</span>`)
+            .join('');
+
+          const card = document.createElement('div');
+          card.className = `category-card ${meta.cls}-border`;
+          card.innerHTML = `
+            <div class="category-header">
+              <span class="cat-icon">${meta.icon}</span>
+              <h3>${category}</h3>
+              <span class="skill-count">${skills.length}</span>
+            </div>
+            <div class="skill-tags">${tagsHtml}</div>
+          `;
+          grid.appendChild(card);
+        }
+      }
+
+      showSection('resultsCard');
+    }
+
+    /** Resets everything so the user can analyze another file. */
+    function resetApp() {
+      selectedFile = null;
+      document.getElementById('resumeInput').value = '';
+      document.getElementById('fileName').textContent = 'No file chosen';
+      document.getElementById('analyzeBtn').disabled = true;
+      dropZone.classList.remove('has-file');
+      hideError();
+      showSection('uploadCard');
+      hideSection('resultsCard');
+      hideSection('loadingCard');
+    }
+
+    // ── Utility helpers ────────────────────────────────────────
+
+    function showSection(id) { document.getElementById(id).style.display = 'block'; }
+    function hideSection(id) { document.getElementById(id).style.display = 'none'; }
+
+    function showError(msg) {
+      const box = document.getElementById('errorBox');
+      box.textContent = '⚠️ ' + msg;
+      box.style.display = 'block';
+    }
+
+    function hideError() {
+      const box = document.getElementById('errorBox');
+      box.style.display = 'none';
+      box.textContent = '';
+    }
+  </script>
+
+</body>
+</html>
